@@ -26,7 +26,10 @@ static void free_bytecode(lua_State *L, CYBytecode *bc) {
 
 static int bc_gc(lua_State *L) {
     CYBytecode **ubc = (CYBytecode **)lua_touserdata(L, 1);
-    free_bytecode(L, *ubc);
+    if (ubc && *ubc) {
+        free_bytecode(L, *ubc);
+        *ubc = NULL;
+    }
     return 0;
 }
 
@@ -101,10 +104,36 @@ static int cyluavm_interpreter(lua_State *L) {
             case CYOP_LOADK: setobj2s(L, RA(i), k + CY_GET_Bx(i)); break;
             case CYOP_LOADBOOL: setbvalue(RA(i), CY_GET_B(i)); if (CY_GET_C(i)) pc++; break;
             case CYOP_LOADNIL: { int b = CY_GET_B(i); StkId ra = RA(i); do { setnilvalue(ra++); } while (b--); break; }
-            case CYOP_GETUPVAL: { int b = CY_GET_B(i); CClosure *cl = clCvalue(L->ci->func); setobj2s(L, RA(i), &cl->upvalue[b + 1]); break; }
-            case CYOP_SETUPVAL: { int b = CY_GET_B(i); CClosure *cl = clCvalue(L->ci->func); setobj2t(L, &cl->upvalue[b + 1], RA(i)); luaC_barrier(L, cl, RA(i)); break; }
-            case CYOP_GETTABUP: { int b = CY_GET_B(i); CClosure *cl = clCvalue(L->ci->func); TValue *upv = &cl->upvalue[b + 1]; TValue *rc = RKC(i); luaV_gettable(L, upv, rc, RA(i)); break; }
-            case CYOP_SETTABUP: { int a_val = CY_GET_A(i); CClosure *cl = clCvalue(L->ci->func); TValue *upv = &cl->upvalue[a_val + 1]; TValue *rb = RKB(i); TValue *rc = RKC(i); luaV_settable(L, upv, rb, rc); break; }
+            case CYOP_GETUPVAL: {
+                int b = CY_GET_B(i);
+                CClosure *cl = clCvalue(L->ci->func);
+                setobj2s(L, RA(i), &cl->upvalue[b + 1]);
+                break;
+            }
+            case CYOP_SETUPVAL: {
+                int b = CY_GET_B(i);
+                CClosure *cl = clCvalue(L->ci->func);
+                setobj2t(L, &cl->upvalue[b + 1], RA(i));
+                luaC_barrier(L, cl, RA(i));
+                break;
+            }
+            case CYOP_GETTABUP: {
+                int b = CY_GET_B(i);
+                CClosure *cl = clCvalue(L->ci->func);
+                TValue *upv = &cl->upvalue[b + 1];
+                TValue *rc = RKC(i);
+                luaV_gettable(L, upv, rc, RA(i));
+                break;
+            }
+            case CYOP_SETTABUP: {
+                int a_val = CY_GET_A(i);
+                CClosure *cl = clCvalue(L->ci->func);
+                TValue *upv = &cl->upvalue[a_val + 1];
+                TValue *rb = RKB(i);
+                TValue *rc = RKC(i);
+                luaV_settable(L, upv, rb, rc);
+                break;
+            }
             case CYOP_GETTABLE: luaV_gettable(L, RB(i), RKC(i), RA(i)); break;
             case CYOP_SETTABLE: luaV_settable(L, RA(i), RKB(i), RKC(i)); break;
             case CYOP_NEWTABLE: { int b = CY_GET_B(i); int c = CY_GET_C(i); Table *t = luaH_new(L); sethvalue(L, RA(i), t); if (b != 0 || c != 0) luaH_resize(L, t, luaO_fb2int(b), luaO_fb2int(c)); luaC_checkGC(L); break; }
@@ -142,19 +171,21 @@ static int cyluavm_dump(lua_State *L) {
         if (cl->f == cyluavm_interpreter) {
             lua_getupvalue(L, 1, 1);
             CYBytecode **pbc = (CYBytecode **)lua_touserdata(L, -1);
-            CYBytecode *bc = *pbc;
+            if (pbc && *pbc) {
+                CYBytecode *bc = *pbc;
+                lua_pop(L, 1);
+                luaL_Buffer b;
+                luaL_buffinit(L, &b);
+                int magic = CY_MAGIC;
+                luaL_addlstring(&b, (const char *)&magic, sizeof(magic));
+                luaL_addlstring(&b, (const char *)&bc->sizecode, sizeof(bc->sizecode));
+                luaL_addlstring(&b, (const char *)bc->code, bc->sizecode * sizeof(Instruction));
+                luaL_addlstring(&b, (const char *)&bc->numparams, sizeof(bc->numparams));
+                luaL_addlstring(&b, (const char *)&bc->maxstacksize, sizeof(bc->maxstacksize));
+                luaL_pushresult(&b);
+                return 1;
+            }
             lua_pop(L, 1);
-            luaL_Buffer b;
-            luaL_buffinit(L, &b);
-            int magic = CY_MAGIC;
-            luaL_addlstring(&b, (const char *)&magic, sizeof(magic));
-            luaL_addlstring(&b, (const char *)&bc->sizecode, sizeof(bc->sizecode));
-            luaL_addlstring(&b, (const char *)bc->code, bc->sizecode * sizeof(Instruction));
-            luaL_addlstring(&b, (const char *)&bc->numparams, sizeof(bc->numparams));
-            luaL_addlstring(&b, (const char *)&bc->maxstacksize, sizeof(bc->maxstacksize));
-            // Constants serialization is omitted for brevity, but could be added here
-            luaL_pushresult(&b);
-            return 1;
         }
     }
     lua_getglobal(L, "CY_OLD_DUMP");
@@ -167,15 +198,16 @@ static int cyluavm_load(lua_State *L) {
     size_t l;
     const char *s = luaL_checklstring(L, 1, &l);
     if (l >= sizeof(int) && *(int *)s == CY_MAGIC) {
-        s += sizeof(int);
-        int sizecode = *(int *)s; s += sizeof(int);
+        const char *p = s;
+        p += sizeof(int);
+        int sizecode = *(int *)p; p += sizeof(int);
         CYBytecode *bc = luaM_new(L, CYBytecode);
         bc->sizecode = sizecode;
         bc->code = luaM_newvector(L, sizecode, Instruction);
-        memcpy(bc->code, s, sizecode * sizeof(Instruction));
-        s += sizecode * sizeof(Instruction);
-        bc->numparams = *(int *)s; s += sizeof(int);
-        bc->maxstacksize = *(int *)s; s += sizeof(int);
+        memcpy(bc->code, p, sizecode * sizeof(Instruction));
+        p += sizecode * sizeof(Instruction);
+        bc->numparams = *(int *)p; p += sizeof(int);
+        bc->maxstacksize = *(int *)p; p += sizeof(int);
         bc->sizek = 0; bc->k = NULL;
 
         CYBytecode **ubc = (CYBytecode **)lua_newuserdata(L, sizeof(CYBytecode *));
