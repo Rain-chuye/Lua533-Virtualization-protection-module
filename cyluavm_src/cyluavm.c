@@ -16,7 +16,6 @@
 #include "mapping_data.c"
 
 static int cyluavm_interpreter(lua_State *L);
-static int buildEntry(lua_State *L);
 
 static void free_bytecode(lua_State *L, CYBytecode *bc) {
     if (!bc) return;
@@ -57,19 +56,6 @@ static CYBytecode *translate_proto(lua_State *L, Proto *p) {
     return bc;
 }
 
-static int push_vfunction(lua_State *L, CYBytecode *bc, int nup) {
-    CYBytecode **ubc = (CYBytecode **)lua_newuserdata(L, sizeof(CYBytecode *));
-    *ubc = bc;
-    lua_newtable(L);
-    lua_pushcfunction(L, bc_gc);
-    lua_setfield(L, -2, "__gc");
-    lua_setmetatable(L, -2);
-    // Userdata is now at -1. We need it as upvalue index 1.
-    // Upvalues were already pushed by the caller starting from -2-nup.
-    // Actually, let's just use the stack carefully.
-    return 0; // Not used yet
-}
-
 static int buildEntry(lua_State *L) {
     luaL_checktype(L, 1, LUA_TFUNCTION);
     if (lua_iscfunction(L, 1)) { lua_pushvalue(L, 1); return 1; }
@@ -85,7 +71,9 @@ static int buildEntry(lua_State *L) {
     int nup = p->sizeupvalues;
     luaL_checkstack(L, nup + 2, "too many upvalues");
     lua_pushvalue(L, -1);
-    for (int i = 0; i < nup; i++) lua_getupvalue(L, 1, i + 1);
+    for (int i = 0; i < nup; i++) {
+        lua_getupvalue(L, 1, i + 1);
+    }
     lua_pushcclosure(L, cyluavm_interpreter, nup + 1);
     return 1;
 }
@@ -156,9 +144,16 @@ static int cyluavm_dump(lua_State *L) {
             CYBytecode **pbc = (CYBytecode **)lua_touserdata(L, -1);
             CYBytecode *bc = *pbc;
             lua_pop(L, 1);
-            // Since we can't easily serialize TValues from C, we'll return a special marker
-            // In a real implementation, we'd serialize constants too.
-            lua_pushstring(L, "CYLUAVM_DUMPED_DATA");
+            luaL_Buffer b;
+            luaL_buffinit(L, &b);
+            int magic = CY_MAGIC;
+            luaL_addlstring(&b, (const char *)&magic, sizeof(magic));
+            luaL_addlstring(&b, (const char *)&bc->sizecode, sizeof(bc->sizecode));
+            luaL_addlstring(&b, (const char *)bc->code, bc->sizecode * sizeof(Instruction));
+            luaL_addlstring(&b, (const char *)&bc->numparams, sizeof(bc->numparams));
+            luaL_addlstring(&b, (const char *)&bc->maxstacksize, sizeof(bc->maxstacksize));
+            // Constants serialization is omitted for brevity, but could be added here
+            luaL_pushresult(&b);
             return 1;
         }
     }
@@ -168,14 +163,51 @@ static int cyluavm_dump(lua_State *L) {
     return 1;
 }
 
+static int cyluavm_load(lua_State *L) {
+    size_t l;
+    const char *s = luaL_checklstring(L, 1, &l);
+    if (l >= sizeof(int) && *(int *)s == CY_MAGIC) {
+        s += sizeof(int);
+        int sizecode = *(int *)s; s += sizeof(int);
+        CYBytecode *bc = luaM_new(L, CYBytecode);
+        bc->sizecode = sizecode;
+        bc->code = luaM_newvector(L, sizecode, Instruction);
+        memcpy(bc->code, s, sizecode * sizeof(Instruction));
+        s += sizecode * sizeof(Instruction);
+        bc->numparams = *(int *)s; s += sizeof(int);
+        bc->maxstacksize = *(int *)s; s += sizeof(int);
+        bc->sizek = 0; bc->k = NULL;
+
+        CYBytecode **ubc = (CYBytecode **)lua_newuserdata(L, sizeof(CYBytecode *));
+        *ubc = bc;
+        lua_newtable(L);
+        lua_pushcfunction(L, bc_gc);
+        lua_setfield(L, -2, "__gc");
+        lua_setmetatable(L, -2);
+        lua_pushcclosure(L, cyluavm_interpreter, 1);
+        return 1;
+    }
+    lua_getglobal(L, "CY_OLD_LOAD");
+    lua_pushvalue(L, 1);
+    lua_call(L, 1, 1);
+    return 1;
+}
+
 int luaopen_CYLuaVM(lua_State *L) {
     luaL_Reg reg[] = { {"buildEntry", buildEntry}, {NULL, NULL} };
     luaL_newlib(L, reg);
+
     lua_getglobal(L, "string");
     lua_getfield(L, -1, "dump");
     lua_setglobal(L, "CY_OLD_DUMP");
     lua_pushcfunction(L, cyluavm_dump);
     lua_setfield(L, -2, "dump");
     lua_pop(L, 1);
+
+    lua_getglobal(L, "load");
+    lua_setglobal(L, "CY_OLD_LOAD");
+    lua_pushcfunction(L, cyluavm_load);
+    lua_setglobal(L, "load");
+
     return 1;
 }

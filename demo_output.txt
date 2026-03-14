@@ -1,0 +1,16 @@
+./lua_src/src/lua: full_roundtrip_test.lua:2: module 'CYLuaVM' not found:
+	no field package.preload['CYLuaVM']
+	no file '/usr/local/share/lua/5.3/CYLuaVM.lua'
+	no file '/usr/local/share/lua/5.3/CYLuaVM/init.lua'
+	no file '/usr/local/lib/lua/5.3/CYLuaVM.lua'
+	no file '/usr/local/lib/lua/5.3/CYLuaVM/init.lua'
+	no file './CYLuaVM.lua'
+	no file './CYLuaVM/init.lua'
+	no file './cyluavm_src/CYLuaVM.so'
+	no file '/usr/local/lib/lua/5.3/CYLuaVM.so'
+	no file '/usr/local/lib/lua/5.3/loadall.so'
+	no file './CYLuaVM.so'
+stack traceback:
+	[C]: in function 'require'
+	full_roundtrip_test.lua:2: in main chunk
+	[C]: in ?
