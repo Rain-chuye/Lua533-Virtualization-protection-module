@@ -1,0 +1,8 @@
+In file included from cyluavm.c:15:
+cyluavm_opcodes.h:104:2: error: #endif without #if
+  104 | #endif
+      |  ^~~~~
+cyluavm.c:17:10: fatal error: mapping_data.c: No such file or directory
+   17 | #include "mapping_data.c"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
